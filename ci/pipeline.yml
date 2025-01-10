@@ -1,0 +1,46 @@
+resources:
+  - name: hello-world-repo
+    type: git
+    source:
+      uri: ((git-repo-uri))
+      branch: main
+
+jobs:
+  - name: build-and-run
+    plan:
+      - get: hello-world-repo
+        trigger: true
+      - task: build-docker-image
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: concourse/buildkit
+          inputs:
+            - name: hello-world-repo
+          outputs:
+            - name: built-image
+          run:
+            path: sh
+            args:
+              - -exc
+              - |
+                cd hello-world-repo
+                docker build -t hello-world .
+      - task: run-docker-container
+        privileged: true
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: docker
+          inputs:
+            - name: hello-world-repo
+          run:
+            path: sh
+            args:
+              - -exc
+              - |
+                docker run hello-world

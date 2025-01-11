@@ -1,9 +1,13 @@
 resources:
-  - name: hello-world-repo
-    type: git
-    source:
-      uri: ((git-repo-uri))
-      branch: main
+- name: hello-world-repo
+  type: git
+  source:
+    uri: git@github.com:EleudoFuva/concourse.git
+    branch: main
+    private_key: |
+      -----BEGIN OPENSSH PRIVATE KEY-----
+      
+      -----END OPENSSH PRIVATE KEY-----
 
 jobs:
   - name: build-and-run
@@ -11,23 +15,41 @@ jobs:
       - get: hello-world-repo
         trigger: true
       - task: build-docker-image
+        privileged: true
         config:
           platform: linux
           image_resource:
             type: registry-image
             source:
-              repository: concourse/buildkit
+              repository: docker
+              tag: dind
           inputs:
             - name: hello-world-repo
           outputs:
-            - name: built-image
+            - name: hello-world-cache
           run:
             path: sh
             args:
               - -exc
               - |
-                cd hello-world-repo
-                docker build -t hello-world .
+                  # Inicia el daemon de Docker
+                  dockerd &
+                  # Espera hasta que el daemon de Docker esté completamente iniciado
+                  while (! docker info > /dev/null 2>&1); do
+                    sleep 1
+                  done
+                  # Cambia al directorio del repositorio
+                  cd hello-world-repo
+                  # Verifica si hay cambios en el repositorio
+                  if [ "$(git rev-parse HEAD)" != "$(cat ../hello-world-cache/last_commit 2>/dev/null)" ]; then
+                    # Construye la imagen y guarda las capas en el volumen
+                    docker build -t hello-world .
+                    docker save hello-world -o ../hello-world-cache/hello-world.tar
+                    # Guarda el commit actual
+                    git rev-parse HEAD > ../hello-world-cache/last_commit
+                  else
+                    echo "No hay cambios en el repositorio. Usando la imagen cacheada."
+                  fi
       - task: run-docker-container
         privileged: true
         config:
@@ -36,11 +58,25 @@ jobs:
             type: registry-image
             source:
               repository: docker
+              tag: dind
           inputs:
-            - name: hello-world-repo
+            - name: hello-world-cache
           run:
             path: sh
             args:
               - -exc
               - |
-                docker run hello-world
+                # Crear el directorio para la configuración del daemon de Docker
+                mkdir -p /etc/docker
+                # Crear configuración mínima para el daemon de Docker
+                echo '{"experimental": true}' > /etc/docker/daemon.json
+                # Inicia el daemon de Docker
+                dockerd &
+                # Espera hasta que el daemon de Docker esté completamente iniciado
+                while (! docker info > /dev/null 2>&1); do
+                  sleep 1
+                done
+                # Cargar las capas de la imagen desde el volumen
+                docker load -i hello-world-cache/hello-world.tar
+                # Corre el contenedor con los permisos adecuados
+                docker run --privileged hello-world
